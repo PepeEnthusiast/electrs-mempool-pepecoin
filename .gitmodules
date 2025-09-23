@@ -1,0 +1,3 @@
+[submodule "crates/rust-bitcoin-v28-pepecoin"]
+	path = crates/rust-bitcoin-v28-pepecoin
+	url = https://github.com/PepeEnthusiast/rust-bitcoin-v28-pepecoin.git
