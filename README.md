@@ -1,3 +1,11 @@
+# Pepecoin Fork
+
+```bash
+$ git clone --recurse-submodules https://github.com/PepeEnthusiast/electrs-mempool-pepecoin.git
+$ cd electrs-mempool-pepecoin
+$ cargo run --release --bin electrs -- -vvvv --jsonrpc-import --daemon-dir ~/.pepecoin --daemon-rpc-addr 127.0.0.1:33873 --cookie user:pass
+```
+
 # Mempool - Electrs backend API
 
 A block chain index engine and HTTP API written in Rust based on [romanz/electrs](https://github.com/romanz/electrs) and [Blockstream/electrs](https://github.com/Blockstream/electrs).
