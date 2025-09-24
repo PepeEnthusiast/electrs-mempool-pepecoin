@@ -1,4 +1,12 @@
-# Pepecoin Fork
+# Electrs-Mempool-Pepecoin - Electrs backend API
+
+## Run with Docker Compose
+
+```bash
+docker compose up -d
+```
+
+## Build & Run from Source
 
 ```bash
 $ git clone --recurse-submodules https://github.com/PepeEnthusiast/electrs-mempool-pepecoin.git
