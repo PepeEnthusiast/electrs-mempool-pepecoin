@@ -3,6 +3,7 @@ name: pepecoin
 services:
   core:
     image: pepeenthusiast/pepecoin-core:latest
+    restart: unless-stopped
     command:
         -printtoconsole
         -server=1
@@ -12,17 +13,12 @@ services:
         -rpcpassword=rpcp
     volumes:
         - pepecoin_data:/home/pepecoin/.pepecoin
-    restart: unless-stopped
   electrs:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: on-failure
+    image: pepeenthusiast/electrs:latest
+    restart: unless-stopped
     ports:
-      - 50001:50001
       - 3000:3000
     command: |
-      -vv
       --jsonrpc-import
       --address-search
       --electrum-rpc-addr 0.0.0.0:50001
