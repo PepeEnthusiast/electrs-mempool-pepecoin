@@ -5,7 +5,7 @@ ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
 RUN apt update -qy && \
     apt install -qy librocksdb-dev curl
 
-FROM base as build
+FROM base AS build
 
 RUN apt install -qy git clang cmake
 
@@ -20,10 +20,22 @@ COPY . .
 
 RUN cargo build --release --bin electrs
 
-FROM base as deploy
+FROM base AS deploy
 
-COPY --from=build /build/target/release/electrs /bin/electrs
+RUN apt update -qy && apt install -qy nginx && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /build/target/release/electrs /usr/bin/electrs
+
+COPY nginx.conf /etc/nginx/conf.d/electrs.conf
+
+RUN rm /etc/nginx/sites-enabled/default
+
+COPY docker-entrypoint.sh /usr/local/bin/
+
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+EXPOSE 3000
 
 EXPOSE 50001
 
-ENTRYPOINT ["/bin/electrs"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
