@@ -1,10 +1,11 @@
-name: pepecoin-mainnet
+name: pepecoin-testnet
 
 services:
   core:
     image: pepeenthusiast/pepecoin-core:latest
     restart: unless-stopped
     command:
+        -testnet
         -printtoconsole
         -server=1
         -txindex=1
@@ -17,13 +18,14 @@ services:
     image: pepeenthusiast/electrs:latest
     restart: unless-stopped
     ports:
-      - 3000:3000
+      - 3001:3000
     command: |
+      --network testnet
       --jsonrpc-import
       --address-search
       --index-unspendables
       --rest-default-chain-txs-per-page 10
-      --daemon-rpc-addr core:33873
+      --daemon-rpc-addr core:44873
       --daemon-dir /.pepecoin
       --cookie rpc:rpcp
       --db-dir /electrs
