@@ -284,7 +284,7 @@ impl Indexer {
         Ok(result)
     }
 
-    fn reorg(&self, reorged: Vec<HeaderEntry>, daemon: &Daemon) -> Result<()> {
+    fn reorg(&self, reorged: Vec<HeaderEntry>, daemon: &Daemon, chain: &ChainQuery) -> Result<()> {
         if reorged.len() > 10 {
             warn!(
                 "reorg of over 10 blocks ({}) detected! Wonky stuff might happen!",
@@ -296,7 +296,7 @@ impl Indexer {
         let (tx, rx) = crossbeam_channel::unbounded();
         // Delete history_db
         bitcoind_sequential_fetcher(daemon, reorged.clone())?
-            .map(|blocks| self.index(&blocks, Operation::DeleteBlocksWithHistory(tx.clone())));
+            .map(|blocks| self.index(&blocks, Operation::DeleteBlocksWithHistory(tx.clone()), chain));
         // Delete txstore
         bitcoind_sequential_fetcher(daemon, reorged)?
             .map(|blocks| self.add(&blocks, Operation::DeleteBlocks));
@@ -318,7 +318,7 @@ impl Indexer {
         Ok(())
     }
 
-    pub fn update(&mut self, daemon: &Daemon) -> Result<BlockHash> {
+    pub fn update(&mut self, daemon: &Daemon, chain: &ChainQuery) -> Result<BlockHash> {
         let daemon = daemon.reconnect()?;
         let tip = daemon.getbestblockhash()?;
         let new_headers = self.get_new_headers(&daemon, &tip)?;
@@ -347,7 +347,7 @@ impl Indexer {
                     }
                 }
 
-                self.reorg(reorged, &daemon)?;
+                self.reorg(reorged, &daemon, chain)?;
             }
 
             headers_len
@@ -370,13 +370,14 @@ impl Indexer {
             self.from
         );
         start_fetcher(self.from, &daemon, to_index)?
-            .map(|blocks| self.index(&blocks, Operation::AddBlocks));
+            .map(|blocks| self.index(&blocks, Operation::AddBlocks, chain));
         self.start_auto_compactions(&self.store.history_db);
 
         if let DBFlush::Disable = self.flush {
             debug!("flushing to disk");
             self.store.txstore_db.flush();
             self.store.history_db.flush();
+            self.store.cache_db.flush();
             self.flush = DBFlush::Enable;
         }
 
@@ -435,7 +436,35 @@ impl Indexer {
         }
     }
 
-    fn index(&self, blocks: &[BlockEntry], op: Operation) {
+    fn precache(&self, scripthash: FullHash, chain: &ChainQuery) {
+        // Open an iterator into the history DB
+        let mut iter = self.store.history_db.raw_iterator();
+        let mut total_entries = 0usize;
+
+        // History keys are b'H' + scripthash + ...
+        let mut prefix = Vec::with_capacity(1 + 32);
+        prefix.push(b'H');
+        prefix.extend_from_slice(&scripthash);
+
+        iter.seek(&prefix);
+
+        while iter.valid() {
+            let key = iter.key().unwrap();
+            if !key.starts_with(&prefix) {
+                break; // we've left this script's history section
+            }
+            total_entries += 1;
+            if total_entries > 100 {
+                // Popular enough — precache and bail early
+                chain.stats(&scripthash[..], crate::new_index::db::DBFlush::Disable);
+                let _ = chain.utxo(&scripthash[..], usize::MAX, crate::new_index::db::DBFlush::Disable);
+                return;
+            }
+            iter.next();
+        }
+    }
+
+    fn index(&self, blocks: &[BlockEntry], op: Operation, chain: &ChainQuery) {
         debug!("Indexing ({}) {} blocks with Indexer", op, blocks.len());
         let previous_txos_map = {
             let _timer = self.start_timer("index_lookup");
@@ -445,12 +474,13 @@ impl Indexer {
                 lookup_txos_sequential(&self.store.txstore_db, &get_previous_txos(blocks), false)
             }
         };
-        let rows = {
+
+        let (rows, precache_all) = {
             let _timer = self.start_timer("index_process");
             if let Operation::AddBlocks = op {
                 let added_blockhashes = self.store.added_blockhashes.read().unwrap();
                 for b in blocks {
-                    if b.entry.height() % 10_000 == 0 {
+                    if b.entry.height() % 100 == 0 {
                         info!("History indexing is up to height={}", b.entry.height());
                     }
                     let blockhash = b.entry.hash();
@@ -462,6 +492,7 @@ impl Indexer {
             }
             index_blocks(blocks, &previous_txos_map, &self.iconfig, &op)
         };
+
         if let Operation::AddBlocks = op {
             self.store.history_db.write(rows, self.flush);
         } else {
@@ -469,6 +500,20 @@ impl Indexer {
                 .history_db
                 .delete(rows.into_iter().map(|r| r.key).collect());
         }
+
+        let uniq: std::collections::HashSet<_> = precache_all.into_iter().collect();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(20)
+            .build()
+            .unwrap();
+
+        pool.install(|| {
+            uniq.into_par_iter().for_each(|script_hash| {
+                self.precache(script_hash, chain);
+            });
+        });
+
+        chain.store().cache_db().flush();
     }
 }
 
@@ -1508,11 +1553,13 @@ fn index_blocks(
     previous_txos_map: &HashMap<OutPoint, TxOut>,
     iconfig: &IndexerConfig,
     op: &Operation,
-) -> Vec<DBRow> {
-    block_entries
-        .par_iter() // serialization is CPU-intensive
+) -> (Vec<DBRow>, Vec<FullHash>) {
+    let (rows, precache_all): (Vec<_>, Vec<_>) = block_entries
+        .par_iter()
         .map(|b| {
             let mut rows = vec![];
+            let mut precache_vec = Vec::new();
+
             for (idx, tx) in b.block.txdata.iter().enumerate() {
                 let height = b.entry.height() as u32;
                 index_transaction(
@@ -1521,15 +1568,22 @@ fn index_blocks(
                     idx as u16,
                     previous_txos_map,
                     &mut rows,
+                    &mut precache_vec,
                     iconfig,
                     op,
                 );
             }
-            rows.push(BlockRow::new_done(full_hash(&b.entry.hash()[..])).into_row()); // mark block as "indexed"
-            rows
+
+            rows.push(BlockRow::new_done(full_hash(&b.entry.hash()[..])).into_row());
+
+            (rows, precache_vec)
         })
-        .flatten()
-        .collect()
+        .unzip();
+
+    (
+        rows.into_iter().flatten().collect(),
+        precache_all.into_iter().flatten().collect(),
+    )
 }
 
 // TODO: return an iterator?
@@ -1539,6 +1593,7 @@ fn index_transaction(
     tx_position: u16,
     previous_txos_map: &HashMap<OutPoint, TxOut>,
     rows: &mut Vec<DBRow>,
+    precache_vec: &mut Vec<FullHash>,
     iconfig: &IndexerConfig,
     op: &Operation,
 ) {
@@ -1548,9 +1603,12 @@ fn index_transaction(
     // persist "edges" for fast is-this-TXO-spent check
     //      S{funding-txid:vout}{spending-txid:vin} → ""
     let txid = full_hash(&tx.txid()[..]);
-    let script_callback = |script_hash| {
+    let mut script_callback = |script_hash| {
         if let Operation::DeleteBlocksWithHistory(tx) = op {
             tx.send(script_hash).expect("unbounded channel won't fail");
+        }
+        if !precache_vec.contains(&script_hash) {
+            precache_vec.push(script_hash);
         }
     };
     for (txo_index, txo) in tx.output.iter().enumerate() {
