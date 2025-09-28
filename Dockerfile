@@ -22,13 +22,7 @@ RUN cargo build --release --bin electrs
 
 FROM base AS deploy
 
-RUN apt update -qy && apt install -qy nginx && rm -rf /var/lib/apt/lists/*
-
 COPY --from=build /build/target/release/electrs /usr/bin/electrs
-
-COPY nginx.conf /etc/nginx/conf.d/electrs.conf
-
-RUN rm /etc/nginx/sites-enabled/default
 
 COPY docker-entrypoint.sh /usr/local/bin/
 

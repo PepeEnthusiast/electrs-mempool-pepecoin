@@ -14,7 +14,9 @@ services:
     volumes:
         - core_data:/home/pepecoin/.pepecoin
   electrs:
-    image: pepeenthusiast/electrs:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
     ports:
       - 3000:3000
