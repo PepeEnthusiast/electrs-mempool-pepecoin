@@ -21,6 +21,7 @@ services:
     ports:
       - 3000:3000
     command: |
+      -vv
       --jsonrpc-import
       --address-search
       --index-unspendables
