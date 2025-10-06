@@ -595,7 +595,7 @@ impl ChainQuery {
 
         if self.light_mode {
             let blockinfo = self.daemon.getblock_raw(hash, 1).ok()?;
-            Some(serde_json::from_value(blockinfo).unwrap())
+            Some(BlockMeta::parse_getblock(blockinfo).ok()?)
         } else {
             self.store
                 .txstore_db

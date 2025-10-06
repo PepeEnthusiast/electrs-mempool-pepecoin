@@ -316,12 +316,22 @@ impl From<&BlockEntry> for BlockMeta {
 
 impl BlockMeta {
     pub fn parse_getblock(val: ::serde_json::Value) -> Result<BlockMeta> {
+        // Calculate tx_count from tx array length, fallback to nTx if available
+        let tx_count = if let Some(tx_array) = val.get("tx") {
+            if let Some(tx_vec) = tx_array.as_array() {
+                tx_vec.len() as u32
+            } else {
+                return Err("tx field is not an array".into());
+            }
+        } else if let Some(n_tx) = val.get("nTx") {
+            n_tx.as_f64()
+                .chain_err(|| "nTx not a number")? as u32
+        } else {
+            return Err("missing both tx array and nTx field".into());
+        };
+
         Ok(BlockMeta {
-            tx_count: val
-                .get("nTx")
-                .chain_err(|| "missing nTx")?
-                .as_f64()
-                .chain_err(|| "nTx not a number")? as u32,
+            tx_count,
             size: val
                 .get("size")
                 .chain_err(|| "missing size")?
