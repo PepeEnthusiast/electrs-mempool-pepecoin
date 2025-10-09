@@ -725,7 +725,7 @@ impl Daemon {
 
         let mut blockhash = BlockHash::default();
         for header in &result {
-            assert_eq!(header.prev_blockhash, blockhash);
+            assert_eq!(header.prev_blockhash(), blockhash);
             blockhash = header.block_hash();
         }
         assert_eq!(blockhash, *tip);
@@ -758,7 +758,7 @@ impl Daemon {
             let header = self
                 .getblockheader(&blockhash)
                 .chain_err(|| format!("failed to get {} header", blockhash))?;
-            blockhash = header.prev_blockhash;
+            blockhash = header.prev_blockhash();
             new_headers.push(header);
         }
         trace!("downloaded {} block headers", new_headers.len());

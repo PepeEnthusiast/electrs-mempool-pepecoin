@@ -94,25 +94,25 @@ impl BlockValue {
             version: {
                 #[allow(clippy::unnecessary_cast)]
                 {
-                    header.version as u32
+                    header.version() as u32
                 }
             },
-            timestamp: header.time,
+            timestamp: header.time(),
             tx_count: blockhm.meta.tx_count,
             size: blockhm.meta.size,
             weight: blockhm.meta.weight,
-            merkle_root: header.merkle_root.to_hex(),
-            previousblockhash: if header.prev_blockhash != BlockHash::default() {
-                Some(header.prev_blockhash.to_hex())
+            merkle_root: header.merkle_root().to_hex(),
+            previousblockhash: if header.prev_blockhash() != BlockHash::default() {
+                Some(header.prev_blockhash().to_hex())
             } else {
                 None
             },
             mediantime: blockhm.mtp,
 
             #[cfg(not(feature = "liquid"))]
-            bits: header.bits,
+            bits: header.bits(),
             #[cfg(not(feature = "liquid"))]
-            nonce: header.nonce,
+            nonce: header.nonce(),
             #[cfg(not(feature = "liquid"))]
             difficulty: difficulty_new(header),
 
@@ -128,8 +128,8 @@ impl BlockValue {
 /// https://github.com/bitcoin/bitcoin/blob/v25.0/src/rpc/blockchain.cpp#L75-L97
 #[cfg_attr(feature = "liquid", allow(dead_code))]
 fn difficulty_new(bh: &bitcoin::BlockHeader) -> f64 {
-    let mut n_shift = bh.bits >> 24 & 0xff;
-    let mut d_diff = (0x0000ffff as f64) / ((bh.bits & 0x00ffffff) as f64);
+    let mut n_shift = bh.bits() >> 24 & 0xff;
+    let mut d_diff = (0x0000ffff as f64) / ((bh.bits() & 0x00ffffff) as f64);
 
     while n_shift < 29 {
         d_diff *= 256.0;
@@ -1972,7 +1972,7 @@ fn blocks(
             .chain()
             .get_block_with_meta(&current_hash)
             .ok_or_else(|| HttpError::not_found("Block not found".to_string()))?;
-        current_hash = blockhm.header_entry.header().prev_blockhash;
+        current_hash = blockhm.header_entry.header().prev_blockhash();
 
         #[allow(unused_mut)]
         let mut value = BlockValue::new(blockhm);
@@ -2131,6 +2131,7 @@ impl From<address::AddressError> for HttpError {
 #[cfg(test)]
 mod tests {
     use crate::rest::HttpError;
+    use bitcoin::{blockdata::block::PureBlockHeader, BlockHeader};
     use serde_json::Value;
     use std::collections::HashMap;
 
@@ -2297,7 +2298,7 @@ mod tests {
             ),
         ];
 
-        let to_bh = |b| bitcoin::BlockHeader {
+        let to_bh = |b| BlockHeader::Pure(PureBlockHeader {
             version: 1,
             prev_blockhash: "0000000000000000000000000000000000000000000000000000000000000000"
                 .parse()
@@ -2308,7 +2309,7 @@ mod tests {
             time: 0,
             bits: b,
             nonce: 0,
-        };
+        });
 
         for (bits, expected, hash, core_difficulty) in vectors {
             let result = difficulty_new(&to_bh(bits));

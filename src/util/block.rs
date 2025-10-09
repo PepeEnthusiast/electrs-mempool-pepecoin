@@ -23,7 +23,7 @@ impl From<&HeaderEntry> for BlockId {
         BlockId {
             height: header.height(),
             hash: *header.hash(),
-            time: header.header().time,
+            time: header.header().time(),
         }
     }
 }
@@ -51,7 +51,7 @@ impl HeaderEntry {
 
 impl fmt::Debug for HeaderEntry {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let last_block_time = DateTime::from_unix_timestamp(self.header().time as i64).unwrap();
+        let last_block_time = DateTime::from_unix_timestamp(self.header().time() as i64).unwrap();
         write!(
             f,
             "hash={} height={} @ {}",
@@ -99,7 +99,7 @@ impl HeaderList {
                     headers_chain.last().map(|h| h.block_hash())
                 )
             });
-            blockhash = header.prev_blockhash;
+            blockhash = header.prev_blockhash();
             headers_chain.push(header);
         }
         headers_chain.reverse();
@@ -128,12 +128,12 @@ impl HeaderList {
             }));
         for i in 1..hashed_headers.len() {
             assert_eq!(
-                hashed_headers[i].header.prev_blockhash,
+                hashed_headers[i].header.prev_blockhash(),
                 hashed_headers[i - 1].blockhash
             );
         }
         let prev_blockhash = match hashed_headers.first() {
-            Some(h) => h.header.prev_blockhash,
+            Some(h) => h.header.prev_blockhash(),
             None => return vec![], // hashed_headers is empty
         };
         let null_hash = BlockHash::default();
@@ -166,7 +166,7 @@ impl HeaderList {
             assert_eq!(new_headers[i - 1].height() + 1, new_headers[i].height());
             assert_eq!(
                 *new_headers[i - 1].hash(),
-                new_headers[i].header().prev_blockhash
+                new_headers[i].header().prev_blockhash()
             );
         }
         let new_height = match new_headers.first() {
@@ -177,7 +177,7 @@ impl HeaderList {
                 } else {
                     BlockHash::default()
                 };
-                assert_eq!(entry.header().prev_blockhash, expected_prev_blockhash);
+                assert_eq!(entry.header().prev_blockhash(), expected_prev_blockhash);
                 height
             }
             None => return (vec![], None),
@@ -252,12 +252,12 @@ impl HeaderList {
         // Use the timestamp as the mtp of the genesis block.
         // Matches bitcoind's behaviour: bitcoin-cli getblock `bitcoin-cli getblockhash 0` | jq '.time == .mediantime'
         if height == 0 {
-            self.headers.first().unwrap().header.time
+            self.headers.first().unwrap().header.time()
         } else if height > self.len() - 1 {
             0
         } else {
             let mut timestamps = (height.saturating_sub(MTP_SPAN - 1)..=height)
-                .map(|p_height| self.headers.get(p_height).unwrap().header.time)
+                .map(|p_height| self.headers.get(p_height).unwrap().header.time())
                 .collect::<Vec<_>>();
             timestamps.sort_unstable();
             timestamps[timestamps.len() / 2]
