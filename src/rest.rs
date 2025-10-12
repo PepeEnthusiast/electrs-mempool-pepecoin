@@ -1324,6 +1324,19 @@ fn handle_request(
             let results = query.chain().address_search(prefix, ADDRESS_SEARCH_LIMIT);
             json_response(results, TTL_SHORT)
         }
+        (&Method::GET, Some(&"addresses"), height, None, None, None) => {
+            if !config.address_search {
+                return Err(HttpError::from("address search disabled".to_string()));
+            }
+
+            let target_height = match height {
+                Some(s) => s.parse::<u32>().map_err(|_| HttpError::from("invalid height".to_string()))?,
+                None => return Err(HttpError::from("height parameter required".to_string())),
+            };
+
+            let results = query.chain().addresses_for_height(target_height);
+            json_response(results, TTL_SHORT)
+        }
         (&Method::GET, Some(&"tx"), Some(hash), None, None, None) => {
             let hash = Txid::from_hex(hash)?;
             let tx = query

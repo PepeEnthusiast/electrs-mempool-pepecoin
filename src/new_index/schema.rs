@@ -46,6 +46,7 @@ pub struct Store {
     txstore_db: DB,
     history_db: DB,
     cache_db: DB,
+    addresses_db: DB,
     added_blockhashes: RwLock<HashSet<BlockHash>>,
     indexed_blockhashes: RwLock<HashSet<BlockHash>>,
     indexed_headers: RwLock<HeaderList>,
@@ -62,6 +63,8 @@ impl Store {
         debug!("{} blocks were indexed", indexed_blockhashes.len());
 
         let cache_db = DB::open(&path.join("cache"), config);
+
+        let addresses_db = DB::open(&path.join("addresses"), config);
 
         let headers = if let Some(tip_hash) = txstore_db.get(b"t") {
             let tip_hash = deserialize(&tip_hash).expect("invalid chain tip in `t`");
@@ -80,6 +83,7 @@ impl Store {
             txstore_db,
             history_db,
             cache_db,
+            addresses_db,
             added_blockhashes: RwLock::new(added_blockhashes),
             indexed_blockhashes: RwLock::new(indexed_blockhashes),
             indexed_headers: RwLock::new(headers),
@@ -96,6 +100,10 @@ impl Store {
 
     pub fn cache_db(&self) -> &DB {
         &self.cache_db
+    }
+
+    pub fn addresses_db(&self) -> &DB {
+        &self.addresses_db
     }
 
     pub fn done_initial_sync(&self) -> bool {
@@ -377,6 +385,7 @@ impl Indexer {
             debug!("flushing to disk");
             self.store.txstore_db.flush();
             self.store.history_db.flush();
+            self.store.addresses_db.flush();
             self.store.cache_db.flush();
             self.flush = DBFlush::Enable;
         }
@@ -464,6 +473,44 @@ impl Indexer {
         }
     }
 
+    fn update_addresses_rows(&self, rows: Vec<DBRow>) {
+        let mut addr_rows = Vec::with_capacity(rows.len());
+        let mut del_keys = Vec::new();
+
+        for row in &rows {
+            if row.key.len() <= 1 || row.key[0] != b'a' {
+                continue;
+            }
+
+            let address = String::from_utf8_lossy(&row.key[1..]).to_string();
+            if row.value.len() != 4 {
+                continue;
+            }
+
+            let new_height = u32::from_be_bytes(row.value[..4].try_into().unwrap());
+
+            if let Some(old_value) = self.store.history_db.get(&row.key) {
+                if old_value.len() == 4 {
+                    let old_height = u32::from_be_bytes(old_value[..4].try_into().unwrap());
+                    let old_key = [old_height.to_be_bytes().as_ref(), address.as_bytes()].concat();
+                    del_keys.push(old_key);
+                }
+            }
+
+            let new_key = [new_height.to_be_bytes().as_ref(), address.as_bytes()].concat();
+            let value = vec![];
+
+            addr_rows.push(DBRow { key: new_key, value });
+        }
+
+        if !del_keys.is_empty() {
+            self.store.addresses_db.delete(del_keys);
+        }
+
+        self.store.history_db.write(rows, self.flush);
+        self.store.addresses_db.write(addr_rows, self.flush);
+    }
+
     fn index(&self, blocks: &[BlockEntry], op: Operation, chain: &ChainQuery) {
         debug!("Indexing ({}) {} blocks with Indexer", op, blocks.len());
         let previous_txos_map = {
@@ -475,7 +522,7 @@ impl Indexer {
             }
         };
 
-        let (rows, precache_all) = {
+        let (rows, addresses_rows, precache_all) = {
             let _timer = self.start_timer("index_process");
             if let Operation::AddBlocks = op {
                 let added_blockhashes = self.store.added_blockhashes.read().unwrap();
@@ -495,6 +542,7 @@ impl Indexer {
 
         if let Operation::AddBlocks = op {
             self.store.history_db.write(rows, self.flush);
+            self.update_addresses_rows(addresses_rows);
         } else {
             self.store
                 .history_db
@@ -1174,6 +1222,24 @@ impl ChainQuery {
             .collect()
     }
 
+    pub fn addresses_for_height(&self, target_height: u32) -> Vec<String> {
+        let _timer_scan = self.start_timer("addresses_for_height");
+        let height_prefix = target_height.to_be_bytes();
+        self.store
+            .addresses_db
+            .iter_scan(&height_prefix)
+            .filter_map(|row| {
+                if row.key.len() <= 4 {
+                    return None;
+                }
+
+                std::str::from_utf8(&row.key[4..])
+                    .ok()
+                    .map(|s| s.to_owned())
+            })
+            .collect()
+    }
+
     fn header_by_hash(&self, hash: &BlockHash) -> Option<HeaderEntry> {
         self.store
             .indexed_headers
@@ -1553,12 +1619,13 @@ fn index_blocks(
     previous_txos_map: &HashMap<OutPoint, TxOut>,
     iconfig: &IndexerConfig,
     op: &Operation,
-) -> (Vec<DBRow>, Vec<FullHash>) {
-    let (rows, precache_all): (Vec<_>, Vec<_>) = block_entries
+) -> (Vec<DBRow>, Vec<DBRow>, Vec<FullHash>) {
+    let results: Vec<(Vec<DBRow>, Vec<DBRow>, Vec<FullHash>)> = block_entries
         .par_iter()
         .map(|b| {
             let mut rows = vec![];
-            let mut precache_vec = Vec::new();
+            let mut addresses_rows = vec![];
+            let mut precache_vec = vec![];
 
             for (idx, tx) in b.block.txdata.iter().enumerate() {
                 let height = b.entry.height() as u32;
@@ -1568,6 +1635,7 @@ fn index_blocks(
                     idx as u16,
                     previous_txos_map,
                     &mut rows,
+                    &mut addresses_rows,
                     &mut precache_vec,
                     iconfig,
                     op,
@@ -1576,14 +1644,40 @@ fn index_blocks(
 
             rows.push(BlockRow::new_done(full_hash(&b.entry.hash()[..])).into_row());
 
-            (rows, precache_vec)
+            (rows, addresses_rows, precache_vec)
         })
-        .unzip();
+        .collect();
 
-    (
-        rows.into_iter().flatten().collect(),
-        precache_all.into_iter().flatten().collect(),
-    )
+    let mut rows_all = Vec::new();
+    let mut addresses_rows_all = Vec::new();
+    let mut precache_all = Vec::new();
+
+    for (rows, addresses_rows, precache) in results {
+        rows_all.extend(rows);
+        addresses_rows_all.extend(addresses_rows);
+        precache_all.extend(precache);
+    }
+
+
+    let mut highest_address_rows: HashMap<Vec<u8>, DBRow> = HashMap::new();
+    for row in addresses_rows_all {
+        let key = row.key.clone();
+        match highest_address_rows.get(&key) {
+            Some(existing) => {
+                let existing_height =
+                    u32::from_be_bytes(existing.value[..].try_into().unwrap());
+                let new_height = u32::from_be_bytes(row.value[..].try_into().unwrap());
+                if new_height > existing_height {
+                    highest_address_rows.insert(key, row);
+                }
+            }
+            None => {
+                highest_address_rows.insert(key, row);
+            }
+        }
+    }
+
+    (rows_all, highest_address_rows.into_values().collect(), precache_all)
 }
 
 // TODO: return an iterator?
@@ -1593,6 +1687,7 @@ fn index_transaction(
     tx_position: u16,
     previous_txos_map: &HashMap<OutPoint, TxOut>,
     rows: &mut Vec<DBRow>,
+    addresses_rows: &mut Vec<DBRow>,
     precache_vec: &mut Vec<FullHash>,
     iconfig: &IndexerConfig,
     op: &Operation,
@@ -1627,8 +1722,8 @@ fn index_transaction(
             rows.push(history.into_row());
 
             if iconfig.address_search {
-                if let Some(row) = addr_search_row(&txo.script_pubkey, iconfig.network) {
-                    rows.push(row);
+                if let Some(row) = addr_search_row(&txo.script_pubkey, iconfig.network, confirmed_height) {
+                    addresses_rows.push(row);
                 }
             }
         }
@@ -1656,6 +1751,12 @@ fn index_transaction(
         script_callback(history.key.hash);
         rows.push(history.into_row());
 
+        if iconfig.address_search {
+            if let Some(row) = addr_search_row(&prev_txo.script_pubkey, iconfig.network, confirmed_height) {
+                addresses_rows.push(row);
+            }
+        }
+
         let edge = TxEdgeRow::new(
             full_hash(&txi.previous_output.txid[..]),
             txi.previous_output.vout,
@@ -1678,10 +1779,10 @@ fn index_transaction(
     );
 }
 
-fn addr_search_row(spk: &Script, network: Network) -> Option<DBRow> {
+fn addr_search_row(spk: &Script, network: Network, last_update_height: u32) -> Option<DBRow> {
     spk.to_address_str(network).map(|address| DBRow {
         key: [b"a", address.as_bytes()].concat(),
-        value: vec![],
+        value: last_update_height.to_be_bytes().to_vec(),
     })
 }
 
