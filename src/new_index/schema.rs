@@ -191,6 +191,8 @@ struct IndexerConfig {
     light_mode: bool,
     address_search: bool,
     index_unspendables: bool,
+    precache_stats: bool,
+    precache_utxos: bool,
     network: Network,
     #[cfg(feature = "liquid")]
     parent_network: crate::chain::BNetwork,
@@ -202,6 +204,8 @@ impl From<&Config> for IndexerConfig {
             light_mode: config.light_mode,
             address_search: config.address_search,
             index_unspendables: config.index_unspendables,
+            precache_stats: config.precache_stats,
+            precache_utxos: config.precache_utxos,
             network: config.network_type,
             #[cfg(feature = "liquid")]
             parent_network: config.parent_network,
@@ -465,8 +469,12 @@ impl Indexer {
             total_entries += 1;
             if total_entries > 100 {
                 // Popular enough — precache and bail early
-                chain.stats(&scripthash[..], crate::new_index::db::DBFlush::Disable);
-                let _ = chain.utxo(&scripthash[..], usize::MAX, crate::new_index::db::DBFlush::Disable);
+                if self.iconfig.precache_stats {
+                    chain.stats(&scripthash[..], crate::new_index::db::DBFlush::Disable);
+                }
+                if self.iconfig.precache_utxos {
+                    let _ = chain.utxo(&scripthash[..], usize::MAX, crate::new_index::db::DBFlush::Disable);
+                }
                 return;
             }
             iter.next();

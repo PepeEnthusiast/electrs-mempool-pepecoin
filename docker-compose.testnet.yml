@@ -25,6 +25,7 @@ services:
       -vv
       --network testnet
       --jsonrpc-import
+      --precache-stats
       --address-search
       --index-unspendables
       --rest-default-chain-txs-per-page 10

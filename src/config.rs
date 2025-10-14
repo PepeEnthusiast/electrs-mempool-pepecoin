@@ -48,6 +48,8 @@ pub struct Config {
     pub light_mode: bool,
     pub main_loop_delay: u64,
     pub address_search: bool,
+    pub precache_stats: bool,
+    pub precache_utxos: bool,
     pub index_unspendables: bool,
     pub cors: Option<String>,
     pub precache_scripts: Option<String>,
@@ -188,6 +190,16 @@ impl Config {
                 Arg::with_name("address_search")
                     .long("address-search")
                     .help("Enable prefix address search")
+            )
+            .arg(
+                Arg::with_name("precache_stats")
+                    .long("precache-stats")
+                    .help("Enable stats precache")
+            )
+            .arg(
+                Arg::with_name("precache_utxos")
+                    .long("precache-utxos")
+                    .help("Enable utxos precache")
             )
             .arg(
                 Arg::with_name("index_unspendables")
@@ -549,6 +561,8 @@ impl Config {
             light_mode: m.is_present("light_mode"),
             main_loop_delay: value_t_or_exit!(m, "main_loop_delay", u64),
             address_search: m.is_present("address_search"),
+            precache_stats: m.is_present("precache_stats"),
+            precache_utxos: m.is_present("precache_utxos"),
             index_unspendables: m.is_present("index_unspendables"),
             cors: m.value_of("cors").map(|s| s.to_string()),
             precache_scripts: m.value_of("precache_scripts").map(|s| s.to_string()),
