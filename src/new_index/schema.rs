@@ -901,6 +901,17 @@ impl ChainQuery {
         self._history(b'H', scripthash, last_seen_txid, start_height, limit)
     }
 
+    pub fn history_reverse<'a>(
+        &'a self,
+        scripthash: &[u8],
+        last_seen_txid: Option<&'a Txid>,
+        start_height: usize,
+        limit: usize,
+    ) -> impl rayon::iter::ParallelIterator<Item = Result<(Transaction, BlockId, u16)>> + 'a {
+        // scripthash lookup
+        self._history_reverse(b'H', scripthash, last_seen_txid, start_height, limit)
+    }
+
     pub fn history_txids_iter<'a>(&'a self, scripthash: &[u8]) -> impl Iterator<Item = Txid> + 'a {
         self.history_iter_scan_reverse(b'H', scripthash, None)
             .map(|row| TxHistoryRow::from_row(row).get_txid())
@@ -919,6 +930,37 @@ impl ChainQuery {
 
         self.lookup_txns(
             self.history_iter_scan_reverse(code, hash, start_height)
+                .map(TxHistoryRow::from_row)
+                // XXX: unique_by() requires keeping an in-memory list of all txids, can we avoid that?
+                .unique_by(|row| row.get_txid())
+                // TODO seek directly to last seen tx without reading earlier rows
+                .skip_while(move |row| {
+                    // skip until we reach the last_seen_txid
+                    last_seen_txid.map_or(false, |last_seen_txid| last_seen_txid != &row.get_txid())
+                })
+                .skip(match last_seen_txid {
+                    Some(_) => 1, // skip the last_seen_txid itself
+                    None => 0,
+                })
+                .filter_map(move |row| {
+                    self.tx_confirming_block(&row.get_txid())
+                        .map(|b| (row.get_txid(), b, row.get_tx_position()))
+                }),
+            limit,
+        )
+    }
+    fn _history_reverse<'a>(
+        &'a self,
+        code: u8,
+        hash: &[u8],
+        last_seen_txid: Option<&'a Txid>,
+        start_height: usize,
+        limit: usize,
+    ) -> impl rayon::iter::ParallelIterator<Item = Result<(Transaction, BlockId, u16)>> + 'a {
+        let _timer_scan = self.start_timer("history");
+
+        self.lookup_txns(
+            self.history_iter_scan(code, hash, start_height)
                 .map(TxHistoryRow::from_row)
                 // XXX: unique_by() requires keeping an in-memory list of all txids, can we avoid that?
                 .unique_by(|row| row.get_txid())

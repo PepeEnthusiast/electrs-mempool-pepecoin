@@ -1131,6 +1131,52 @@ fn handle_request(
             &Method::GET,
             Some(script_type @ &"address"),
             Some(script_str),
+            Some(&"txs-reverse"),
+            Some(&"chain"),
+            last_seen_txid,
+        )
+        | (
+            &Method::GET,
+            Some(script_type @ &"scripthash"),
+            Some(script_str),
+            Some(&"txs-reverse"),
+            Some(&"chain"),
+            last_seen_txid,
+        ) => {
+            let script_hash = to_scripthash(script_type, script_str, config.network_type)?;
+            let last_seen_txid = last_seen_txid.and_then(|txid| Txid::from_hex(txid).ok());
+            let max_txs = query_params
+                .get("max_txs")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(config.rest_default_chain_txs_per_page);
+
+            let mut txs = query
+                .chain()
+                .history_reverse(&script_hash[..], last_seen_txid.as_ref(), 0, max_txs)
+                .map(|res| res.map(|(tx, blockid, tx_position)| (tx, Some(blockid), tx_position)))
+                .collect::<Result<Vec<_>, _>>()?;
+            txs.sort_unstable_by(|(_, blockid1, tx_position1), (_, blockid2, tx_position2)| {
+                blockid2
+                    .as_ref()
+                    .map(|b| b.height)
+                    .cmp(&blockid1.as_ref().map(|b| b.height))
+                    .then_with(|| tx_position2.cmp(tx_position1))
+            });
+            json_response(
+                prepare_txs(
+                    txs.into_iter()
+                        .map(|(tx, blockid, _)| (tx, blockid))
+                        .collect(),
+                    query,
+                    config,
+                ),
+                TTL_SHORT,
+            )
+        }
+        (
+            &Method::GET,
+            Some(script_type @ &"address"),
+            Some(script_str),
             Some(&"txs"),
             Some(&"summary"),
             last_seen_txid,
