@@ -47,6 +47,7 @@ pub struct Store {
     history_db: DB,
     cache_db: DB,
     addresses_db: DB,
+    tx_index_db: DB,
     added_blockhashes: RwLock<HashSet<BlockHash>>,
     indexed_blockhashes: RwLock<HashSet<BlockHash>>,
     indexed_headers: RwLock<HeaderList>,
@@ -66,6 +67,8 @@ impl Store {
 
         let addresses_db = DB::open(&path.join("addresses"), config);
 
+        let tx_index_db = DB::open(&path.join("tx_index"), config);
+
         let headers = if let Some(tip_hash) = txstore_db.get(b"t") {
             let tip_hash = deserialize(&tip_hash).expect("invalid chain tip in `t`");
             let headers_map = load_blockheaders(&txstore_db);
@@ -84,6 +87,7 @@ impl Store {
             history_db,
             cache_db,
             addresses_db,
+            tx_index_db,
             added_blockhashes: RwLock::new(added_blockhashes),
             indexed_blockhashes: RwLock::new(indexed_blockhashes),
             indexed_headers: RwLock::new(headers),
@@ -104,6 +108,10 @@ impl Store {
 
     pub fn addresses_db(&self) -> &DB {
         &self.addresses_db
+    }
+
+    pub fn tx_index_db(&self) -> &DB {
+        &self.tx_index_db
     }
 
     pub fn done_initial_sync(&self) -> bool {
@@ -390,6 +398,7 @@ impl Indexer {
             self.store.txstore_db.flush();
             self.store.history_db.flush();
             self.store.addresses_db.flush();
+            self.store.tx_index_db.flush();
             self.store.cache_db.flush();
             self.flush = DBFlush::Enable;
         }
@@ -530,7 +539,7 @@ impl Indexer {
             }
         };
 
-        let (rows, addresses_rows, precache_all) = {
+        let (rows, addresses_rows, tx_index_rows, precache_all) = {
             let _timer = self.start_timer("index_process");
             if let Operation::AddBlocks = op {
                 let added_blockhashes = self.store.added_blockhashes.read().unwrap();
@@ -550,11 +559,15 @@ impl Indexer {
 
         if let Operation::AddBlocks = op {
             self.store.history_db.write(rows, self.flush);
+            self.store.tx_index_db.write(tx_index_rows, self.flush);
             self.update_addresses_rows(addresses_rows);
         } else {
             self.store
                 .history_db
                 .delete(rows.into_iter().map(|r| r.key).collect());
+            self.store
+                .tx_index_db
+                .delete(tx_index_rows.into_iter().map(|r| r.key).collect());
         }
 
         let uniq: std::collections::HashSet<_> = precache_all.into_iter().collect();
@@ -728,6 +741,44 @@ impl ChainQuery {
                 TxHistoryRow::prefix_height_end(code, hash, start_height)
             }),
         )
+    }
+    fn lookup_tx_position(&self, txid: &Txid) -> Option<(u32, u16)> {
+        let key = [&[b'I'], txid.as_ref()].concat();
+        self.store.tx_index_db.get(&key).map(|bytes| {
+            bincode_util::deserialize_big(&bytes).unwrap()
+        })
+    }
+    fn history_iter_scan_reverse_seek(
+        &self,
+        code: u8,
+        hash: &[u8],
+        start_height: Option<u32>,
+        after_txid: Option<&Txid>,
+    ) -> ReverseScanIterator {
+        let prefix = TxHistoryRow::filter(code, hash);
+
+        // Default seek position (either end of prefix or height)
+        let default_seek_key = start_height.map_or(
+            TxHistoryRow::prefix_end(code, hash),
+            |h| TxHistoryRow::prefix_height_end(code, hash, h),
+        );
+
+        // Try to build a specific key to start *after* the last seen tx
+        if let Some(txid) = after_txid {
+            if let Some((height, pos)) = self.lookup_tx_position(txid) {
+                let seek_key =
+                    bincode_util::serialize_big(&(code, full_hash(hash), height, pos)).unwrap();
+                return self
+                    .store
+                    .history_db
+                    .iter_scan_reverse_seek_after(&prefix, &seek_key);
+            }
+        }
+
+        // Fallback: normal reverse scan
+        self.store
+            .history_db
+            .iter_scan_reverse(&prefix, &default_seek_key)
     }
     fn history_iter_scan_group_reverse(
         &self,
@@ -929,19 +980,9 @@ impl ChainQuery {
         let _timer_scan = self.start_timer("history");
 
         self.lookup_txns(
-            self.history_iter_scan_reverse(code, hash, start_height)
+            self.history_iter_scan_reverse_seek(code, hash, start_height, last_seen_txid)
                 .map(TxHistoryRow::from_row)
-                // XXX: unique_by() requires keeping an in-memory list of all txids, can we avoid that?
                 .unique_by(|row| row.get_txid())
-                // TODO seek directly to last seen tx without reading earlier rows
-                .skip_while(move |row| {
-                    // skip until we reach the last_seen_txid
-                    last_seen_txid.map_or(false, |last_seen_txid| last_seen_txid != &row.get_txid())
-                })
-                .skip(match last_seen_txid {
-                    Some(_) => 1, // skip the last_seen_txid itself
-                    None => 0,
-                })
                 .filter_map(move |row| {
                     self.tx_confirming_block(&row.get_txid())
                         .map(|b| (row.get_txid(), b, row.get_tx_position()))
@@ -1669,12 +1710,13 @@ fn index_blocks(
     previous_txos_map: &HashMap<OutPoint, TxOut>,
     iconfig: &IndexerConfig,
     op: &Operation,
-) -> (Vec<DBRow>, Vec<DBRow>, Vec<FullHash>) {
-    let results: Vec<(Vec<DBRow>, Vec<DBRow>, Vec<FullHash>)> = block_entries
+) -> (Vec<DBRow>, Vec<DBRow>, Vec<DBRow>, Vec<FullHash>) {
+    let results: Vec<(Vec<DBRow>, Vec<DBRow>, Vec<DBRow>, Vec<FullHash>)> = block_entries
         .par_iter()
         .map(|b| {
             let mut rows = vec![];
             let mut addresses_rows = vec![];
+            let mut tx_index_rows = vec![];
             let mut precache_vec = vec![];
 
             for (idx, tx) in b.block.txdata.iter().enumerate() {
@@ -1686,6 +1728,7 @@ fn index_blocks(
                     previous_txos_map,
                     &mut rows,
                     &mut addresses_rows,
+                    &mut tx_index_rows,
                     &mut precache_vec,
                     iconfig,
                     op,
@@ -1694,17 +1737,19 @@ fn index_blocks(
 
             rows.push(BlockRow::new_done(full_hash(&b.entry.hash()[..])).into_row());
 
-            (rows, addresses_rows, precache_vec)
+            (rows, addresses_rows, tx_index_rows, precache_vec)
         })
         .collect();
 
     let mut rows_all = Vec::new();
     let mut addresses_rows_all = Vec::new();
+    let mut tx_index_rows_all = Vec::new();
     let mut precache_all = Vec::new();
 
-    for (rows, addresses_rows, precache) in results {
+    for (rows, addresses_rows, tx_index_rows, precache) in results {
         rows_all.extend(rows);
         addresses_rows_all.extend(addresses_rows);
+        tx_index_rows_all.extend(tx_index_rows);
         precache_all.extend(precache);
     }
 
@@ -1727,7 +1772,7 @@ fn index_blocks(
         }
     }
 
-    (rows_all, highest_address_rows.into_values().collect(), precache_all)
+    (rows_all, highest_address_rows.into_values().collect(), tx_index_rows_all, precache_all)
 }
 
 // TODO: return an iterator?
@@ -1738,6 +1783,7 @@ fn index_transaction(
     previous_txos_map: &HashMap<OutPoint, TxOut>,
     rows: &mut Vec<DBRow>,
     addresses_rows: &mut Vec<DBRow>,
+    tx_index_rows: &mut Vec<DBRow>,
     precache_vec: &mut Vec<FullHash>,
     iconfig: &IndexerConfig,
     op: &Operation,
@@ -1827,6 +1873,18 @@ fn index_transaction(
         rows,
         op,
     );
+
+    // --- Add TxID → (height, pos) index ---------------------------------------
+    // Key format: b"I" + txid
+    // Value: serialized (confirmed_height, tx_position)
+    let tx_index_key = [&[b'I'], tx.txid().as_ref()].concat();
+    let tx_index_value = bincode_util::serialize_big(&(confirmed_height, tx_position))
+        .expect("serialize tx index");
+
+    tx_index_rows.push(DBRow {
+        key: tx_index_key,
+        value: tx_index_value,
+    });
 }
 
 fn addr_search_row(spk: &Script, network: Network, last_update_height: u32) -> Option<DBRow> {

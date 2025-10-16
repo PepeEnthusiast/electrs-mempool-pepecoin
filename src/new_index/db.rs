@@ -201,6 +201,23 @@ impl DB {
         }
     }
 
+    pub fn iter_scan_reverse_seek_after(
+        &self,
+        prefix: &[u8],
+        seek_key: &[u8],
+    ) -> ReverseScanIterator {
+        let mut iter = self.db.raw_iterator();
+
+        // Seek to the specific key, then move one step back if necessary
+        iter.seek_for_prev(seek_key);
+
+        ReverseScanIterator {
+            prefix: prefix.to_vec(),
+            iter,
+            done: false,
+        }
+    }
+
     pub fn iter_scan_group_reverse(
         &self,
         prefixes: impl Iterator<Item = (Vec<u8>, Vec<u8>)>,
