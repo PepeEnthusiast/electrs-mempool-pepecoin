@@ -780,6 +780,29 @@ impl ChainQuery {
             .history_db
             .iter_scan_reverse(&prefix, &default_seek_key)
     }
+    pub fn history_iter_scan_seek(
+        &self,
+        code: u8,
+        hash: &[u8],
+        start_height: usize,
+        after_txid: Option<&Txid>,
+    ) -> ScanIterator {
+        let prefix = TxHistoryRow::filter(code, hash);
+
+        // Default start position based on start_height
+        let default_start_key = TxHistoryRow::prefix_height(code, hash, start_height as u32);
+
+        // Try to seek directly after last_seen_txid
+        if let Some(txid) = after_txid {
+            if let Some((height, pos)) = self.lookup_tx_position(txid) {
+                let seek_key = bincode_util::serialize_big(&(code, full_hash(hash), height, pos)).unwrap();
+                return self.store.history_db.iter_scan_from(&prefix, &seek_key);
+            }
+        }
+
+        // Fallback: normal forward scan from start_height
+        self.store.history_db.iter_scan_from(&prefix, &default_start_key)
+    }
     fn history_iter_scan_group_reverse(
         &self,
         code: u8,
@@ -1001,15 +1024,9 @@ impl ChainQuery {
         let _timer_scan = self.start_timer("history");
 
         self.lookup_txns(
-            self.history_iter_scan(code, hash, start_height)
+            self.history_iter_scan_seek(code, hash, start_height, last_seen_txid)
                 .map(TxHistoryRow::from_row)
-                // XXX: unique_by() requires keeping an in-memory list of all txids, can we avoid that?
                 .unique_by(|row| row.get_txid())
-                // TODO seek directly to last seen tx without reading earlier rows
-                .skip_while(move |row| {
-                    // skip until we reach the last_seen_txid
-                    last_seen_txid.map_or(false, |last_seen_txid| last_seen_txid != &row.get_txid())
-                })
                 .skip(match last_seen_txid {
                     Some(_) => 1, // skip the last_seen_txid itself
                     None => 0,
