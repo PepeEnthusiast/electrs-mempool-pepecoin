@@ -322,10 +322,12 @@ impl Connection {
     fn blockchain_scripthash_get_balance(&self, params: &[Value]) -> Result<Value> {
         let script_hash = hash_from_value(params.first()).chain_err(|| "bad script_hash")?;
         let (chain_stats, mempool_stats) = self.query.stats(&script_hash[..]);
+        let confirmed: std::result::Result<u64, std::num::ParseIntError> = (chain_stats.funded_txo_sum - chain_stats.spent_txo_sum).to_string().parse();
+        let unconfirmed: std::result::Result<u64, std::num::ParseIntError> = (mempool_stats.funded_txo_sum - mempool_stats.spent_txo_sum).to_string().parse();
 
         Ok(json!({
-            "confirmed": chain_stats.funded_txo_sum - chain_stats.spent_txo_sum,
-            "unconfirmed": mempool_stats.funded_txo_sum as i64 - mempool_stats.spent_txo_sum as i64,
+            "confirmed": confirmed.unwrap_or(0),
+            "unconfirmed": unconfirmed.unwrap_or(0),
         }))
     }
 

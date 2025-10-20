@@ -5,6 +5,8 @@ use bitcoin::VarInt;
 use itertools::Itertools;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
+use serde_with::{serde_as, DisplayFromStr};
+use num_bigint::BigUint;
 
 #[cfg(not(feature = "liquid"))]
 use bitcoin::consensus::encode::{deserialize, serialize};
@@ -152,15 +154,18 @@ pub struct SpendingInput {
     pub confirmed: Option<BlockId>,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct ScriptStats {
     pub tx_count: usize,
     pub funded_txo_count: usize,
     pub spent_txo_count: usize,
     #[cfg(not(feature = "liquid"))]
-    pub funded_txo_sum: u64,
+    #[serde_as(as = "DisplayFromStr")]
+    pub funded_txo_sum: BigUint,
     #[cfg(not(feature = "liquid"))]
-    pub spent_txo_sum: u64,
+    #[serde_as(as = "DisplayFromStr")]
+    pub spent_txo_sum: BigUint,
 }
 
 impl ScriptStats {
