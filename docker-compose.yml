@@ -24,6 +24,7 @@ services:
       -vv
       --jsonrpc-import
       --precache-stats
+      --precache-utxos
       --address-search
       --index-unspendables
       --rest-default-chain-txs-per-page 10
