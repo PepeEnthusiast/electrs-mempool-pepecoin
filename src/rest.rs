@@ -842,15 +842,15 @@ fn handle_request(
                 .chain()
                 .get_block_txids(&hash)
                 .ok_or_else(|| HttpError::not_found("Block not found".to_string()))?;
+            let max_txs = query_params
+                .get("max_txs")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(config.rest_default_chain_txs_per_page);
+            let max_txs = std::cmp::min(max_txs, config.rest_default_chain_txs_per_page);
 
             let start_index = start_index.map_or(0u32, |el| el.parse().unwrap_or(0)) as usize;
             if start_index >= txids.len() {
                 bail!(HttpError::not_found("start index out of range".to_string()));
-            } else if start_index % config.rest_default_chain_txs_per_page != 0 {
-                bail!(HttpError::from(format!(
-                    "start index must be a multipication of {}",
-                    config.rest_default_chain_txs_per_page
-                )));
             }
 
             // blockid_by_hash() only returns the BlockId for non-orphaned blocks,
@@ -860,7 +860,7 @@ fn handle_request(
             let txs = txids
                 .iter()
                 .skip(start_index)
-                .take(config.rest_default_chain_txs_per_page)
+                .take(max_txs)
                 .map(|txid| {
                     query
                         .lookup_txn(txid)
