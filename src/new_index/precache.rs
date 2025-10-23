@@ -47,13 +47,15 @@ pub fn precache(chain: Arc<ChainQuery>, scripthashes: Vec<FullHash>, threads: us
                     // Every 10k counts, flush the DB to disk
                     if post_increment_counter % 10000 == 0 {
                         info!("Flushing cache_db... {post_increment_counter}");
-                        chain.store().cache_db().flush();
+                        chain.store().stats_cache_db().flush();
+                        chain.store().utxos_cache_db().flush();
                         info!("Done Flushing cache_db!!! {post_increment_counter}");
                     }
                 })
         });
         // After everything is done, flush the cache
-        chain.store().cache_db().flush();
+        chain.store().stats_cache_db().flush();
+        chain.store().utxos_cache_db().flush();
     });
 }
 

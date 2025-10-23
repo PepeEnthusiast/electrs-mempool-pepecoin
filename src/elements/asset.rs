@@ -503,7 +503,7 @@ where
     // invalidates the cache if the block was orphaned.
     let cache: Option<(T, usize)> = chain
         .store()
-        .cache_db()
+        .stats_cache_db()
         .get(&asset_cache_key(asset_id))
         .map(|c| bincode_util::deserialize_little(&c).unwrap())
         .and_then(|(stats, blockhash)| {
@@ -522,7 +522,7 @@ where
 
     // save updated stats to cache
     if let Some(lastblock) = lastblock {
-        chain.store().cache_db().write(
+        chain.store().stats_cache_db().write(
             vec![asset_cache_row(asset_id, &newstats, &lastblock)],
             DBFlush::Enable,
         );
