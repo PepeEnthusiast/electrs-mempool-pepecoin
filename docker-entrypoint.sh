@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-defaults="--http-addr=0.0.0.0:3000 --utxos-limit=25000 --electrum-txs-limit=25000"
+defaults="--http-addr=0.0.0.0:3000 --electrum-txs-limit=25000"
 
 for def in $defaults; do
     flag=$(echo "$def" | cut -d= -f1)

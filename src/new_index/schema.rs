@@ -1182,8 +1182,8 @@ impl ChainQuery {
 
         // update utxo set with new transactions since
         let (newutxos, lastblock, processed_items) = cache.map_or_else(
-            || self.utxo_delta(scripthash, HashMap::new(), 0, limit),
-            |(oldutxos, blockheight)| self.utxo_delta(scripthash, oldutxos, blockheight + 1, limit),
+            || self.utxo_delta(scripthash, HashMap::new(), 0, usize::MAX),
+            |(oldutxos, blockheight)| self.utxo_delta(scripthash, oldutxos, blockheight + 1, usize::MAX),
         )?;
 
         // save updated utxo set to cache
@@ -1199,6 +1199,7 @@ impl ChainQuery {
         // format as Utxo objects
         Ok(newutxos
             .into_iter()
+            .take(limit)
             .map(|(outpoint, (blockid, value))| {
                 // in elements/liquid chains, we have to lookup the txo in order to get its
                 // associated asset. the asset information could be kept in the db history rows

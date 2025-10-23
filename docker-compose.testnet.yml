@@ -29,6 +29,7 @@ services:
       --precache-utxos
       --address-search
       --index-unspendables
+      --utxos-limit=25000
       --rest-default-chain-txs-per-page 10
       --daemon-rpc-addr core:44873
       --daemon-dir /.pepecoin
